@@ -1,0 +1,162 @@
+アプリケーションのアップデートをする度にタイムゾーンが
+UTCからJSTに戻ってしまって時刻ズレが発生する。
+UTCに固定化したい。
+
+JSTの場合
+# strings /etc/localtime
+TZif2
+TZif2
+JST-9
+
+UTCの場合
+# strings /etc/localtime
+TZif2
+TZif2
+UTC0
+
+[参考]Timezoneの変更
+http://qiita.com/azusanakano/items/b39bd22504313884a7c3
+
+
+■ tzdataについて色々実験したメモ
+
+/etc/localtime のタイムスタンプを確認
+-rw-r--r--   1 root root    292  3月 13 00:00 2017 localtime
+-rw-r--r--   1 root root    333  3月 21 00:00 2016 localtime_yyyymmdd
+
+タイムスタンプが0時になってるので、この日にyumによってtzdataがアップデートされていたら
+tzdataのアップデートが原因でタイムゾーンがズレていた可能性が高い。
+
+# cd /var/log
+# grep tzdata yum.log-20170101
+Feb 15 09:00:37 Updated: tzdata-2016a-2.el6.noarch
+Mar 21 00:00:17 Updated: tzdata-2016b-1.el6.noarch　★してる
+Mar 28 00:00:26 Updated: tzdata-2016c-1.el6.noarch
+Apr 25 00:00:15 Updated: tzdata-2016d-1.el6.noarch
+Jun 27 00:00:33 Updated: tzdata-2016e-1.el6.noarch
+Jul 11 00:00:28 Updated: tzdata-2016f-1.el6.noarch
+Oct 10 00:00:35 Updated: tzdata-2016g-2.el6.noarch
+Oct 24 00:00:21 Updated: tzdata-2016h-1.el6.noarch
+Nov 14 00:00:17 Updated: tzdata-2016i-1.el6.noarch
+
+# grep tzdata yum.log
+Feb 27 00:02:08 Updated: tzdata-2016j-1.el6.noarch
+Mar 13 00:00:42 Updated: tzdata-2017a-1.el6.noarch　★してる
+Apr 10 00:05:07 Updated: tzdata-2017b-1.el6.noarch
+
+yum reinstall tzdata ではタイムスタンプは変わらなかった。
+
+[参考]
+http://marchfoxx.blogspot.jp/2015/01/blog-post_30.html
+http://d.hatena.ne.jp/nekoruri/20150130/glibclocaltime
+http://qiita.com/sudix/items/7f22165b9d934cf0a630
+
+現在の設定値
+
+# cd /etc/sysconfig/
+# strings clock
+ZONE="Asia/Tokyo"
+
+# strings /etc/localtime
+TZif2
+TZif2
+JST-9
+
+localtimeを意図的に変える。
+
+# cp -pi /usr/share/zoneinfo/UTC /etc/localtime
+# strings localtime
+TZif2
+TZif2
+UTC0
+
+# date
+2017年  6月 22日 木曜日 01:36:22 UTC
+
+# ls -l /etc/localtime
+-rw-r--r-- 1 root root 118  4月  3 14:15 2017 /etc/localtime
+
+この状態でtzdataを再インストール
+
+# yum reinstall tzdata
+# ls -l /etc/localtime
+-rw-r--r-- 1 root root 292  6月 22 10:49 2017 /etc/localtime
+
+# strings /etc/localtime
+TZif2
+TZif2
+JST-9
+　　→変わった
+
+# date
+2017年  6月 22日 木曜日 10:54:03 JST
+　→JSTになった
+
+再インストールしなくても、tzdata-update を実行すれば良い？
+またlocaltimeを意図的に変えて実験する。
+
+# cp -pi /usr/share/zoneinfo/UTC /etc/localtime
+# date
+2017年  6月 22日 木曜日 02:01:29 UTC
+
+# /usr/sbin/tzdata-update
+# strings /etc/localtime
+TZif2
+TZif2
+JST-9
+
+# date
+2017年  6月 22日 木曜日 11:01:46 JST
+
+　→変わった
+
+glibcの更新時にも tzdata-update が実行されていて、これによって以下のような動作をしている？
+
+/etc/sysconfig/clockの中身を確認
+↓
+「ZONE="Asia/Tokyo"」と書いてあるので、/usr/share/zoneinfo/Asia/Tokyo を /etc/localtime に設定する。
+↓
+localtimeが JST に戻ってしまう。
+↓
+アプリのバージョンアップのタイミングでサービス再起動して、
+そこでタイムゾーンの変更がアプリ側に読み込まれて時間が狂う？
+
+なので、最終的には以下のようにすれば固定化できる。
+
+# cp -pi /etc/sysconfig/clock /etc/sysconfig/clock_backup
+# vi /etc/sysconfig/clock
+---------------------
+ZONE="Asia/Tokyo"
+↓
+ZONE="UTC"
+---------------------
+
+確認
+# /usr/sbin/tzdata-update
+# yum reinstall tzdata
+
+
+＜おまけ＞
+
+tzdataのrpmパッケージの中身を見てみる。
+
+# rpm2cpio tzdata-2017b-1.el6.src.rpm | cpio -id
+# ls -l
+-rw-r--r-- 1 root  root    1347  6月 22 11:42 2017 7090844.patch
+-rw-r--r-- 1 root  root    1364  6月 22 11:42 2017 7133138.patch
+-rw-r--r-- 1 root  root     829  6月 22 11:42 2017 8051641.patch
+-rw-rw-r-- 1 root  root   30924  6月 22 11:42 2017 javazic-1.8-37392f2f5d59.tar.xz
+-rw-r--r-- 1 root  root    1659  6月 22 11:42 2017 javazic-fixup.patch
+-rw-rw-r-- 1 root  root   57271  6月 22 11:42 2017 javazic.tar.gz
+-rw-r--r-- 1 root  root    1565  6月 22 11:42 2017 rebase-01.patch
+-rw-r--r-- 1 root  root    1269  6月 22 11:42 2017 rebase-02.patch
+-rw-rw-r-- 1 root  root  210780  6月 22 11:42 2017 tzcode2017b.tar.gz
+-rw-r--r-- 1 root  root   44828  6月 22 11:42 2017 tzdata.spec
+-rw-rw-r-- 1 root  root  324317  6月 22 11:42 2017 tzdata2017b.tar.gz
+
+tzdata.specとか。
+------------------------------------
+%post -p <lua>
+-- Update /etc/localtime with the zone configured in /etc/sysconfig/clock.
+------------------------------------
+　→このような記述あり
