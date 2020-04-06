@@ -1,0 +1,112 @@
+/etc/cron.daily/rhsmd が以下のエラーで失敗する。
+-------------------------------------------------
+/etc/cron.daily/rhsmd:
+
+grep: -P supports only unibyte and UTF-8 locales
+sleep: オペランドがありません
+Try 'sleep --help' for more information.
+/etc/cron.daily/rhsmd: 19 行:  6003 Terminated              /usr/libexec/rhsmd -s
+-------------------------------------------------
+
+grep の -P オプションはユニバイトおよびUTF-8環境でしか使えない？
+このサーバはEUC-JPとかにしていたような気がする。
+
+# localectl status
+   System Locale: LANG=ja_JP.eucjp
+       VC Keymap: jp
+      X11 Layout: jp
+
+cronの中身
+
+# cat -n /etc/cron.daily/rhsmd
+     1  #!/bin/sh
+     2  # nightly run of rhsmd to log entitlement expiration/validity errors to syslog
+     3  # this is a cron job because it doesn't need to 'phone home'. should that
+     4  # change, look into calling the dbus interface from rhsmcertd instead.
+     5  config=$(grep -E "^processTimeout" /etc/rhsm/rhsm.conf | grep -Po "[0-9]+")
+     6  if [ -n $config ]; then
+     7    rhsmd_timeout=$config
+     8  else
+     9    rhsmd_timeout=300
+    10  fi
+    11
+    12  /usr/libexec/rhsmd -s &
+    13  sleep $rhsmd_timeout;
+    14
+    15  ps_check=$(pgrep -f '/usr/libexec/rhsmd')
+    16  if [ -n "$ps_check" ]; then
+    17    pkill -f '/usr/libexec/rhsmd' >/dev/null 2>&1
+    18    logger -t rhsmd -p user.warn "rhsmd process exceeded runtime and was killed." >/dev/null 2>&1
+    
+rhsmdでライセンスの確認でもしている？
+この5行目の時点で grep -Po としているので、ここで -P が使えずにコマンドが正常完了していなさそう。
+6行目の時点で $config に何も入っていないので rhsmd_timeout に何も入らず、13行目の sleep で「オペランドが無い」と？
+
+if の n オプションは「文字数が0より大なら真」らしいけど、もしかして何も入っていないと真でも偽でもなくなるのか？
+　★これは if[ -n $config ] の部分で $config をダブルクォーテーションで囲んでいないのが原因らしい。
+ 　 "$config" としていればtestコマンドに対して「空である」という情報が伝わるけれど、
+    ""が無いことにより「test -n 」だけ実行していることになり、testコマンドが異常終了している。
+    これはスクリプトのバグなのでは・・・。
+    
+# grep -E "^processTimeout" /etc/rhsm/rhsm.conf
+processTimeout = 300
+
+結局はこの 300 を拾えれば良さそうなので
+
+# grep -E "^processTimeout" /etc/rhsm/rhsm.conf | awk '{print $3}'
+300
+
+に修正してみるとか？
+
+
+＜＜＜実験＞＞＞
+
+適当にファイル作る
+$ vi aaa
+
+grep -P を実行してみる
+$ grep -P a aaa
+grep: -P supports only unibyte and UTF-8 locales
+
+$ vi test.sh
+---------------------------------
+#!/bin/sh
+
+config=$(grep -E "^processTimeout" /etc/rhsm/rhsm.conf | grep -Po "[0-9]+")
+if [ -n $config ]; then
+ rhsmd_timeout=$config
+else
+ rhsmd_timeout=300
+fi
+
+echo $rhsmd_timeout
+---------------------------------
+$ chmod 755 test.sh
+
+$ ./test.sh
+grep: -P supports only unibyte and UTF-8 locales
+
+
+修正
+$ vi test.sh
+---------------------------------
+#!/bin/sh
+
+LANG=ja_JP.UTF-8
+
+config=$(grep -E "^processTimeout" /etc/rhsm/rhsm.conf | grep -Po "[0-9]+")
+if [ -n $config ]; then
+ rhsmd_timeout=$config
+else
+ rhsmd_timeout=300
+fi
+
+echo $rhsmd_timeout
+---------------------------------
+
+$ ./test.sh
+300
+
+/etc/cron.daily/rhsmd のコメント行の下あたりに
+LANG=ja_JP.UTF-8
+を追記してあげれば良さそう。
