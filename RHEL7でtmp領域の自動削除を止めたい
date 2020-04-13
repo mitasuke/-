@@ -1,0 +1,242 @@
+/tmp の下が勝手に削除されないようにしたい。
+RHEL7 から tmpwatch が無くなっている。
+systemd-tmpfiles-clean.timer がtmp領域の掃除をしているらしい。
+
+設定ファイルはここ：
+/usr/lib/tmpfiles.d/tmp.conf
+
+↑のファイルを /etc/tmpfiles.d/ にコピーして、
+/tmp/* を除外するように書き換えておけば良いかもしれない。
+
+[参考]
+https://www.thegeekdiary.com/centos-rhel-7-how-tmpfiles-clean-up-tmp-or-var-tmp-replacement-of-tmpwatch/
+https://qiita.com/kuroneko9/items/70a102a7bb1aa53661a2
+https://qiita.com/suemoc/items/e29285e8e67263298f35
+https://qiita.com/ryoya-s/items/8084d0f7de0e907eadc7
+https://yyuuiikk.org/entry/538
+https://server.etutsplus.com/centos-7-tmpfiles-d-deleted-outdate-files/
+
+
+＜＜　検証　＞＞
+
+manコマンドで確認
+# man tmpfiles.d
+--------------------------------------------
+CONFIGURATION FORMAT
+
+Files in /etc/tmpfiles.d override files with the same name in /usr/lib/tmpfiles.d and /run/tmpfiles.d.
+Files in /run/tmpfiles.d override files with the same name in /usr/lib/tmpfiles.d.
+Packages should install their configuration files in /usr/lib/tmpfiles.d.
+Files in /etc/tmpfiles.d are reserved for the local administrator, who may use this logic to override the configuration files installed by vendor packages. 
+All configuration files are sorted by their filename in lexicographic order, regardless of which of the directories they reside in.
+If multiple files specify the same path, the entry in the file with the lexicographically earliest name will be applied.
+All other conflicting entries will be logged as errors.
+When two lines are prefix and suffix of each other, then the prefix is always processed first, the suffix later.
+Otherwise, the files/directories are processed in the order they are listed.
+If the administrator wants to disable a configuration file supplied by the vendor, the recommended way is to place a symlink to /dev/null in /etc/tmpfiles.d/ bearing the same filename.
+--------------------------------------------
+
+/etc/tmpfiles.d > /run/tmpfiles.d > /usr/lib/tmpfiles.d
+という順番に強いらしい。
+
+systemd-tmpfiles-clean.timer では atime/mtime/ctime を全てチェックするので、
+ファイルを作ってから touch でタイムスタンプを変えるだけでは
+削除されるかどうか確認ができない。（ctimeが変えられないので）
+
+設定確認
+
+# cat /usr/lib/tmpfiles.d/tmp.conf
+-----------------------------
+v /tmp 1777 root root 10d
+v /var/tmp 1777 root root 30d
+-----------------------------
+　→ /tmp の下は10日以上経過したものが消える
+
+NTPを停止（なぜか止まってた）
+# systemctl disable ntpd.service
+
+chronydも停止
+# systemctl stop chronyd
+# systemctl disable chronyd
+
+ファイル作る
+# cd /tmp/
+# touch test
+# mkdir mita
+
+timeを確認
+# stat test
+Access: 2020-03-27 18:54:15.333822690 +0900
+Modify: 2020-03-27 18:54:15.333822690 +0900
+Change: 2020-03-27 18:54:15.333822690 +0900
+
+# stat mita
+Access: 2020-03-27 18:54:27.822006515 +0900
+Modify: 2020-03-27 18:54:27.822006515 +0900
+Change: 2020-03-27 18:54:27.822006515 +0900
+
+サーバの時刻をずらす
+# date
+2020年  3月 27日 金曜日 19:09:58 JST
+
+# date -s "03/28 20:00 2030"
+# date
+2030年  3月 28日 木曜日 20:00:02 JST
+
+この時点でファイル作成
+# touch test2
+# mkdir mita2
+
+# stat test2
+Access: 2030-03-28 20:00:37.166547096 +0900
+Modify: 2030-03-28 20:00:37.166547096 +0900
+Change: 2030-03-28 20:00:37.166547096 +0900
+
+# stat mita2
+Access: 2030-03-28 20:00:39.423580319 +0900
+Modify: 2030-03-28 20:00:39.423580319 +0900
+Change: 2030-03-28 20:00:39.423580319 +0900
+
+
+サーバ再起動してみる
+# shutdown -r now
+
+test と mita が消えるはず・・・。
+
+$ date
+2020年  3月 27日 金曜日 19:16:12 JST
+　→再起動したら時刻が戻ってしまった
+　　xenホストで同期させられるのか？？
+
+
+サーバの時刻を古くする
+# date -s "03/28 20:00 2010"
+# date
+2010年  3月 28日 日曜日 20:00:01 JST
+
+ここでファイル作成
+
+# cd /tmp/
+# touch test3
+# mkdir mita3
+
+# stat test3
+Access: 2010-03-28 20:01:47.397000000 +0900
+Modify: 2010-03-28 20:01:47.397000000 +0900
+Change: 2010-03-28 20:01:47.397000000 +0900
+
+# stat mita3
+Access: 2010-03-28 20:01:50.509000000 +0900
+Modify: 2010-03-28 20:01:50.509000000 +0900
+Change: 2010-03-28 20:01:50.509000000 +0900
+
+サーバ再起動してみる
+
+# shutdown -r now
+
+時刻が戻った場合、mita3とtest3が消えるはず・・・。
+
+
+# date
+2020年  3月 27日 金曜日 19:22:41 JST
+
+# ls -l /tmp/
+合計 0
+drwxr-xr-x 2 root root 6  3月 27 18:54 mita
+drwxr-xr-x 2 root root 6  3月 28  2030 mita2
+drwxr-xr-x 2 root root 6  3月 28  2010 mita3
+-rw-r--r-- 1 root root 0  3月 27 18:54 test
+-rw-r--r-- 1 root root 0  3月 28  2030 test2
+-rw-r--r-- 1 root root 0  3月 28  2010 test3
+
+　→消えてない
+
+
+手動で削除処理を実行
+
+[参考]
+https://qiita.com/kuroneko9/items/70a102a7bb1aa53661a2
+https://www.thegeekdiary.com/centos-rhel-7-how-tmpfiles-clean-up-tmp-or-var-tmp-replacement-of-tmpwatch/
+
+# SYSTEMD_LOG_TARGET=console SYSTEMD_LOG_LEVEL=debug /usr/bin/systemd-tmpfiles --clean
+
+# ls -l /tmp/
+drwxr-xr-x 2 root root 6  3月 27 18:54 mita
+drwxr-xr-x 2 root root 6  3月 28  2030 mita2
+-rw-r--r-- 1 root root 0  3月 27 18:54 test
+-rw-r--r-- 1 root root 0  3月 28  2030 test2
+
+　→消えた
+
+
+設定ファイルを作成
+
+# cd /etc/tmpfiles.d/
+# cp -pi /usr/lib/tmpfiles.d/tmp.conf .
+# vi tmp.conf
+----------------
+x /tmp/*
+x /var/tmp/*
+----------------
+
+サーバの時刻を古くする
+
+# date -s "03/28 20:00 2010"
+# date
+2010年  3月 28日 日曜日 20:00:02 JST
+
+ここでファイル作成
+
+# cd /tmp/
+# touch test3
+# mkdir mita3
+
+# stat test3
+Access: 2010-03-28 20:00:16.230000000 +0900
+Modify: 2010-03-28 20:00:16.230000000 +0900
+Change: 2010-03-28 20:00:16.230000000 +0900
+
+# stat mita3
+Access: 2010-03-28 20:00:19.255000000 +0900
+Modify: 2010-03-28 20:00:19.255000000 +0900
+Change: 2010-03-28 20:00:19.255000000 +0900
+
+サーバ再起動してみる
+
+# shutdown -r now
+
+# date
+2020年  3月 27日 金曜日 19:51:03 JST
+
+# ls -l /tmp/
+
+　→まだ消えてない
+
+手動で削除処理を実行
+
+# SYSTEMD_LOG_TARGET=console SYSTEMD_LOG_LEVEL=debug /usr/bin/systemd-tmpfiles --clean
+
+# ls -l /tmp/
+合計 0
+drwxr-xr-x 2 root root 6  3月 27 18:54 mita
+drwxr-xr-x 2 root root 6  3月 28  2030 mita2
+drwxr-xr-x 2 root root 6  3月 28  2010 mita3
+-rw-r--r-- 1 root root 0  3月 27 18:54 test
+-rw-r--r-- 1 root root 0  3月 28  2030 test2
+-rw-r--r-- 1 root root 0  3月 28  2010 test3
+
+　→消えなかった！
+ 
+ 
+ ＜＜　実装　＞＞
+ 
+ 設定ファイルを作成
+
+# cd /etc/tmpfiles.d/
+# cp -pi /usr/lib/tmpfiles.d/tmp.conf .
+# vi tmp.conf
+----------------
+x /tmp/*
+x /var/tmp/*
+----------------
+# mv tmp.conf aaa_tmp.conf（.confなら名前は何でも良さそう）
